@@ -19,7 +19,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "网盘归档"
     plugin_desc = "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -74,10 +74,16 @@ class CloudArchive(_PluginBase):
     VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"}
 
     def _to_items(self, rows: List[Dict[str, Any]], keyword: str) -> List[Dict[str, str]]:
+        # 实时过滤掉已不存在的文件，避免对话框残留陈旧候选
+        live_rows = []
+        for x in rows:
+            p = x.get("path", "")
+            if p and Path(p).exists():
+                live_rows.append(x)
         kw = (keyword or "").strip().lower()
         if kw:
-            rows = [x for x in rows if kw in str(x.get("group", "")).lower() or kw in str(x.get("name", "")).lower()]
-        return [{"title": f"{x.get('name','')} | {x.get('age_days', 0)}天 | {x.get('size_mb',0)}MB", "value": x.get("path", "")} for x in rows[:800]]
+            live_rows = [x for x in live_rows if kw in str(x.get("group", "")).lower() or kw in str(x.get("name", "")).lower()]
+        return [{"title": f"{x.get('name','')} | {x.get('age_days', 0)}天 | {x.get('size_mb',0)}MB", "value": x.get("path", "")} for x in live_rows[:800]]
 
     def _to_group_items(self, rows: List[Dict[str, Any]], keyword: str) -> List[Dict[str, str]]:
         kw = (keyword or "").strip().lower()
@@ -85,7 +91,16 @@ class CloudArchive(_PluginBase):
             rows = [g for g in rows if kw in str(g.get("group", "")).lower()]
         return [{"title": f"{g['group']} | {g['count']}个视频 | {g['size_mb']:.0f}MB", "value": g["group"]} for g in rows[:800]]
 
+    def _prune_missing_candidates(self):
+        self._pending_movie_files = [x for x in (self._pending_movie_files or []) if x.get("path") and Path(x.get("path")).exists()]
+        self._pending_tv_files = [x for x in (self._pending_tv_files or []) if x.get("path") and Path(x.get("path")).exists()]
+        movie_paths = {x.get("path") for x in self._pending_movie_files}
+        tv_paths = {x.get("path") for x in self._pending_tv_files}
+        self._selected_movie_paths = [p for p in (self._selected_movie_paths or []) if p in movie_paths]
+        self._selected_tv_paths = [p for p in (self._selected_tv_paths or []) if p in tv_paths]
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        self._prune_missing_candidates()
         return [{"component": "VForm", "content": [
             {"component": "VRow", "content": [
                 {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}]},
@@ -165,7 +180,7 @@ class CloudArchive(_PluginBase):
         tv_mb = sum(x.get("size_mb", 0) for x in self._pending_tv_files)
         total_mb = movie_mb + tv_mb
         last = self._last_transfer_result or {}
-        return [{"component": "VCard", "props": {"title": "网盘归档 v2.0.0"}, "content": [{"component": "VCardText", "props": {"text":
+        return [{"component": "VCard", "props": {"title": "网盘归档 v2.0.1"}, "content": [{"component": "VCardText", "props": {"text":
             f"电影候选: {len(self._pending_movie_files)} 个（{movie_mb:.0f}MB）\n"
             f"电视剧候选: {len(self._pending_tv_files)} 个（{tv_mb:.0f}MB）\n"
             f"总计: {total_mb:.0f}MB / {total_mb/1024:.2f}GB\n"
