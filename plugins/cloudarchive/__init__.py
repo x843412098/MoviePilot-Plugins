@@ -25,7 +25,7 @@ class CloudArchive(_PluginBase):
         "清理本地文件、硬链接和下载器种子记录，支持手动确认模式。"
     )
     plugin_icon = "cloud_archive.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/NousResearch/hermes-agent"
     plugin_config_prefix = "cloudarchive_"
