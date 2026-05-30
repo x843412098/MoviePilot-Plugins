@@ -1,3 +1,4 @@
+import os
 import shutil
 import time
 from datetime import datetime, timedelta
@@ -19,7 +20,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "网盘归档"
     plugin_desc = "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "2.1.1"
+    plugin_version = "2.1.2"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -428,6 +429,35 @@ class CloudArchive(_PluginBase):
                 break
             cur = cur.parent
 
+    def _move_with_retry(self, src: Path, dst: Path, size_bytes: int, retries: int = 3):
+        last_err = None
+        for i in range(retries):
+            try:
+                shutil.move(str(src), str(dst))
+                if dst.exists() and dst.stat().st_size == size_bytes:
+                    return
+                raise RuntimeError("目标校验失败")
+            except Exception as e:
+                last_err = e
+                # I/O错误(Errno 5)常见于网盘挂载瞬时抖动，先等再重试
+                time.sleep(2 + i)
+
+        # move重试失败后，走 copy+fsync+unlink 的兜底路径
+        for i in range(retries):
+            try:
+                shutil.copy2(str(src), str(dst))
+                with open(dst, 'rb') as f:
+                    os.fsync(f.fileno())
+                if dst.exists() and dst.stat().st_size == size_bytes:
+                    src.unlink(missing_ok=True)
+                    return
+                raise RuntimeError("兜底复制后校验失败")
+            except Exception as e:
+                last_err = e
+                time.sleep(2 + i)
+
+        raise last_err if last_err else RuntimeError("未知移动错误")
+
     def _do_transfer(self, selected_only: bool = True):
         candidates = self._pick_candidates(selected_only)
         if self._risk_control_enabled:
@@ -458,7 +488,7 @@ class CloudArchive(_PluginBase):
             dst.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                shutil.move(str(src), str(dst))
+                self._move_with_retry(src, dst, item["size_bytes"], retries=3)
                 if not dst.exists() or dst.stat().st_size != item["size_bytes"]:
                     raise RuntimeError("目标校验失败")
 

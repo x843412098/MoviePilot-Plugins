@@ -1,7 +1,7 @@
 {
   "CloudArchive": {
     "name": "网盘归档",
-    "version": "2.1.1",
+    "version": "2.1.2",
     "description": "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。",
     "author": "Hermes Agent",
     "level": 2,
