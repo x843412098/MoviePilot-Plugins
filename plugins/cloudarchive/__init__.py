@@ -19,7 +19,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "夸克网盘归档"
     plugin_desc = "仅扫描硬链接视频，支持按剧集目录勾选后归档。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -49,6 +49,7 @@ class CloudArchive(_PluginBase):
     _item_interval_sec = 2
     _selected_paths: List[str] = []
     _selected_groups: List[str] = []
+    _series_keyword = ""
 
     _pending_files: List[Dict[str, Any]] = []
     _pending_groups: List[Dict[str, Any]] = []
@@ -61,11 +62,19 @@ class CloudArchive(_PluginBase):
         return [x.strip() for x in str(raw or "").replace(",", "\n").split("\n") if x.strip()]
 
     def _pending_select_items(self) -> List[Dict[str, str]]:
-        return [{"title": f"{x.get('name','')} | {x.get('age_days', 0)}天 | {x.get('size_mb',0)}MB", "value": x.get("path", "")} for x in self._pending_files[:800]]
+        keyword = (self._series_keyword or "").strip().lower()
+        rows = self._pending_files
+        if keyword:
+            rows = [x for x in rows if keyword in str(x.get("group", "")).lower() or keyword in str(x.get("name", "")).lower()]
+        return [{"title": f"{x.get('name','')} | {x.get('age_days', 0)}天 | {x.get('size_mb',0)}MB", "value": x.get("path", "")} for x in rows[:800]]
 
     def _group_select_items(self) -> List[Dict[str, str]]:
+        keyword = (self._series_keyword or "").strip().lower()
+        rows = self._pending_groups
+        if keyword:
+            rows = [g for g in rows if keyword in str(g.get("group", "")).lower()]
         items = []
-        for g in self._pending_groups[:800]:
+        for g in rows[:800]:
             items.append({"title": f"{g['group']} | {g['count']}个视频 | {g['size_mb']:.0f}MB", "value": g["group"]})
         return items
 
@@ -104,6 +113,9 @@ class CloudArchive(_PluginBase):
                 {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VTextField", "props": {"model": "item_interval_sec", "label": "每个任务间隔秒", "type": "number"}}]},
             ]},
             {"component": "VRow", "content": [
+                {"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextField", "props": {"model": "series_keyword", "label": "按剧集名搜索过滤", "clearable": True, "hint": "输入关键字后，下方目录/文件勾选列表会过滤", "persistentHint": True}}]},
+            ]},
+            {"component": "VRow", "content": [
                 {"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VSelect", "props": {"model": "selected_groups", "label": "剧集目录勾选（多选）", "items": self._group_select_items(), "multiple": True, "chips": True}}]},
             ]},
             {"component": "VRow", "content": [
@@ -116,13 +128,14 @@ class CloudArchive(_PluginBase):
             "delete_local": True, "delete_qb": True,
             "selected_mode": True, "series_group_mode": True, "run_selected_once": False,
             "risk_control_enabled": True, "max_items_per_run": 1, "item_interval_sec": 2,
+            "series_keyword": "",
             "selected_paths": [], "selected_groups": [],
         }
 
     def get_page(self) -> Optional[List[dict]]:
         total_mb = sum(x.get("size_mb", 0) for x in self._pending_files)
         last = self._last_transfer_result or {}
-        return [{"component": "VCard", "props": {"title": "夸克网盘归档 v1.3.1"}, "content": [{"component": "VCardText", "props": {"text":
+        return [{"component": "VCard", "props": {"title": "夸克网盘归档 v1.3.2"}, "content": [{"component": "VCardText", "props": {"text":
             f"待归档: {len(self._pending_files)} 个视频（{total_mb:.0f}MB / {total_mb/1024:.2f}GB）\n"
             f"目录候选: {len(self._pending_groups)} 组\n"
             f"上次扫描: {self._last_scan_time or '从未'}\n"
@@ -154,6 +167,7 @@ class CloudArchive(_PluginBase):
         self._run_selected_once = config.get("run_selected_once", False)
         self._selected_paths = config.get("selected_paths", []) or []
         self._selected_groups = config.get("selected_groups", []) or []
+        self._series_keyword = str(config.get("series_keyword", "") or "").strip()
 
         self._pending_files = self.get_data("pending_files") or []
         self._pending_groups = self.get_data("pending_groups") or []
