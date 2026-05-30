@@ -16,21 +16,10 @@ from app.schemas import NotificationType
 
 
 class CloudArchive(_PluginBase):
-    """夸克网盘归档
-
-    功能：
-    1) 扫描超过指定天数的文件
-    2) 移动到夸克挂载目录并校验
-    3) 清理本地源文件 + 硬链接文件
-    4) 删除 qB 下载记录
-    5) 发送通知
-    6) 手动确认模式：仅扫描+通知，不自动转移
-    """
-
     plugin_name = "夸克网盘归档"
-    plugin_desc = "旧文件转移到夸克挂载目录，校验后清理本地与 qB 记录。"
+    plugin_desc = "旧文件转移到夸克挂载目录，支持先扫描再勾选归档。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -52,10 +41,20 @@ class CloudArchive(_PluginBase):
     _delete_qb = True
     _delete_local = True
     _size_threshold_mb = 0
+    _selected_mode = True
+    _run_selected_once = False
+    _selected_paths: List[str] = []
 
     _pending_files: List[Dict[str, Any]] = []
     _last_scan_time: Optional[str] = None
     _last_transfer_result: Optional[Dict[str, Any]] = None
+
+    def _pending_select_items(self) -> List[Dict[str, str]]:
+        items = []
+        for x in self._pending_files[:500]:
+            label = f"{x.get('name','')} | {x.get('age_days',0)}天 | {x.get('size_mb',0)}MB"
+            items.append({"title": label, "value": x.get("path", "")})
+        return items
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [
@@ -65,66 +64,45 @@ class CloudArchive(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "confirm_mode", "label": "手动确认模式"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "notify", "label": "发送通知"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VSwitch", "props": {"model": "onlyonce", "label": "立即运行一次"}}],
-                            },
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用插件"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "confirm_mode", "label": "手动确认模式(只扫描)"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "notify", "label": "发送通知"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "onlyonce", "label": "立即扫描一次"}}]},
                         ],
                     },
                     {
                         "component": "VRow",
                         "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{"component": "VTextField", "props": {"model": "cron", "label": "定时表达式", "placeholder": "0 3 * * *"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VTextField", "props": {"model": "days", "label": "归档天数", "type": "number"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{"component": "VTextField", "props": {"model": "size_threshold_mb", "label": "最小文件(MB)", "type": "number"}}],
-                            },
+                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [{"component": "VTextField", "props": {"model": "cron", "label": "定时表达式", "placeholder": "0 3 * * *"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VTextField", "props": {"model": "days", "label": "归档天数", "type": "number"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VTextField", "props": {"model": "size_threshold_mb", "label": "最小文件(MB)", "type": "number"}}]},
                         ],
                     },
                     {
                         "component": "VRow",
                         "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "scan_paths",
-                                            "label": "扫描目录（每行一个）",
-                                            "rows": 3,
-                                            "placeholder": "/vol1/1000/Media/源文件/电影\n/vol1/1000/Media/源文件/电视剧",
-                                        },
-                                    }
-                                ],
-                            }
+                            {"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextarea", "props": {"model": "scan_paths", "label": "扫描目录（每行一个）", "rows": 3}}]},
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextarea", "props": {"model": "hardlink_paths", "label": "硬链接目录（每行一个）", "rows": 2}}]},
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {"component": "VCol", "props": {"cols": 12, "md": 8}, "content": [{"component": "VTextField", "props": {"model": "target_path", "label": "夸克归档目录"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 2}, "content": [{"component": "VSwitch", "props": {"model": "delete_local", "label": "删本地"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 2}, "content": [{"component": "VSwitch", "props": {"model": "delete_qb", "label": "删QB记录"}}]},
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "selected_mode", "label": "仅归档勾选项"}}]},
+                            {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "run_selected_once", "label": "执行勾选项一次"}}]},
                         ],
                     },
                     {
@@ -135,36 +113,19 @@ class CloudArchive(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VTextarea",
+                                        "component": "VSelect",
                                         "props": {
-                                            "model": "hardlink_paths",
-                                            "label": "硬链接目录（每行一个）",
-                                            "rows": 2,
-                                            "placeholder": "/vol1/1000/Media/硬链接/电影\n/vol1/1000/Media/硬链接/电视剧",
+                                            "model": "selected_paths",
+                                            "label": "扫描结果勾选（多选）",
+                                            "items": self._pending_select_items(),
+                                            "multiple": True,
+                                            "chips": True,
+                                            "hint": "先点‘立即扫描一次’保存后刷新，再在这里勾选，再打开‘执行勾选项一次’保存。",
+                                            "persistentHint": True,
                                         },
                                     }
                                 ],
                             }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
-                                "content": [{"component": "VTextField", "props": {"model": "target_path", "label": "夸克归档目录", "placeholder": "/path/to/quick"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 2},
-                                "content": [{"component": "VSwitch", "props": {"model": "delete_local", "label": "删本地"}}],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 2},
-                                "content": [{"component": "VSwitch", "props": {"model": "delete_qb", "label": "删QB记录"}}],
-                            },
                         ],
                     },
                 ],
@@ -182,6 +143,9 @@ class CloudArchive(_PluginBase):
             "target_path": "",
             "delete_local": True,
             "delete_qb": True,
+            "selected_mode": True,
+            "run_selected_once": False,
+            "selected_paths": [],
         }
 
     def get_page(self) -> Optional[List[dict]]:
@@ -191,14 +155,11 @@ class CloudArchive(_PluginBase):
             f"状态: {status}\n"
             f"手动确认: {'开启' if self._confirm_mode else '关闭'}\n"
             f"待转移: {len(self._pending_files)} 个\n"
+            f"已勾选: {len(self._selected_paths)} 个\n"
             f"上次扫描: {self._last_scan_time or '从未'}\n"
             f"上次结果: 成功{last.get('success',0)} 失败{last.get('failed',0)} 跳过{last.get('skipped',0)}"
         )
-        return [{
-            "component": "VCard",
-            "props": {"title": "夸克网盘归档 v1.1.0"},
-            "content": [{"component": "VCardText", "props": {"text": msg}}],
-        }]
+        return [{"component": "VCard", "props": {"title": "夸克网盘归档 v1.2.0"}, "content": [{"component": "VCardText", "props": {"text": msg}}]}]
 
     def get_state(self) -> bool:
         return self._enabled
@@ -217,6 +178,11 @@ class CloudArchive(_PluginBase):
         self._delete_qb = config.get("delete_qb", True)
         self._delete_local = config.get("delete_local", True)
         self._size_threshold_mb = float(config.get("size_threshold_mb", 0) or 0)
+        self._selected_mode = config.get("selected_mode", True)
+        self._run_selected_once = config.get("run_selected_once", False)
+        self._selected_paths = config.get("selected_paths", []) or []
+        if not isinstance(self._selected_paths, list):
+            self._selected_paths = []
 
         self.stop_service()
 
@@ -224,9 +190,8 @@ class CloudArchive(_PluginBase):
         self._last_scan_time = self.get_data("last_scan_time")
         self._last_transfer_result = self.get_data("last_transfer_result")
 
-        if not self._enabled and not self._onlyonce:
+        if not self._enabled and not self._onlyonce and not self._run_selected_once:
             return
-
         if not self._target_path or not self._scan_paths:
             logger.warning("[CloudArchive] 未配置扫描目录或归档目录")
             return
@@ -234,62 +199,55 @@ class CloudArchive(_PluginBase):
         self._scheduler = BackgroundScheduler(timezone=settings.TZ)
 
         if self._onlyonce:
-            self._scheduler.add_job(
-                self._scheduled_job,
-                "date",
-                run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-            )
+            self._scheduler.add_job(self._do_scan_only, "date", run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3))
             self._onlyonce = False
             config["onlyonce"] = False
             self.update_config(config=config)
 
-        if self._cron:
+        if self._run_selected_once:
+            self._scheduler.add_job(self._run_selected_now, "date", run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=5))
+            self._run_selected_once = False
+            config["run_selected_once"] = False
+            self.update_config(config=config)
+
+        if self._enabled and self._cron:
             parts = self._cron.strip().split()
             if len(parts) == 5:
-                self._scheduler.add_job(
-                    self._scheduled_job,
-                    "cron",
-                    minute=parts[0],
-                    hour=parts[1],
-                    day=parts[2],
-                    month=parts[3],
-                    day_of_week=parts[4],
-                )
+                self._scheduler.add_job(self._scheduled_job, "cron", minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4])
             else:
-                logger.warning(f"[CloudArchive] Cron格式非法: {self._cron}，回退每天3点")
                 self._scheduler.add_job(self._scheduled_job, "cron", minute="0", hour="3")
 
         if self._scheduler.get_jobs():
             self._scheduler.start()
 
+    def _split_lines(self, raw: str) -> List[str]:
+        return [x.strip() for x in raw.replace(",", "\n").split("\n") if x.strip()]
+
+    def _do_scan_only(self):
+        self._do_scan()
+        if self._notify:
+            total_mb = sum(x.get("size_mb", 0) for x in self._pending_files)
+            self._send_notification("📦 扫描完成", f"候选文件: {len(self._pending_files)} 个，约 {total_mb:.0f}MB。请在插件配置里勾选后执行。")
+
+    def _run_selected_now(self):
+        self._do_scan()
+        self._do_transfer(selected_only=self._selected_mode)
+
     def _scheduled_job(self):
         self._do_scan()
         if self._confirm_mode:
             if self._notify and self._pending_files:
-                total_mb = sum(x.get("size_mb", 0) for x in self._pending_files)
-                self._send_notification(
-                    "📦 发现可归档文件",
-                    f"共 {len(self._pending_files)} 个，约 {total_mb:.0f}MB。\n"
-                    f"手动确认模式开启：请关闭“手动确认模式”并勾选“立即运行一次”后执行转移。",
-                )
+                self._send_notification("📦 发现可归档文件", f"共 {len(self._pending_files)} 个。手动确认模式已开启。")
             return
-        self._do_transfer()
-
-    def _split_lines(self, raw: str) -> List[str]:
-        return [x.strip() for x in raw.replace(",", "\n").split("\n") if x.strip()]
+        self._do_transfer(selected_only=self._selected_mode)
 
     def _do_scan(self):
         scan_dirs = self._split_lines(self._scan_paths)
-        if not scan_dirs:
-            return
-
         cutoff = time.time() - (self._days * 86400)
         pending = []
-
         for scan_dir in scan_dirs:
             root = Path(scan_dir)
             if not root.exists():
-                logger.warning(f"[CloudArchive] 目录不存在: {scan_dir}")
                 continue
             for fp in root.rglob("*"):
                 if not fp.is_file():
@@ -303,17 +261,7 @@ class CloudArchive(_PluginBase):
                 size_mb = st.st_size / (1024 * 1024)
                 if self._size_threshold_mb > 0 and size_mb < self._size_threshold_mb:
                     continue
-                pending.append(
-                    {
-                        "name": fp.name,
-                        "path": str(fp),
-                        "size_bytes": st.st_size,
-                        "size_mb": round(size_mb, 2),
-                        "age_days": int((time.time() - st.st_mtime) / 86400),
-                        "mtime": st.st_mtime,
-                    }
-                )
-
+                pending.append({"name": fp.name, "path": str(fp), "size_bytes": st.st_size, "size_mb": round(size_mb, 2), "age_days": int((time.time() - st.st_mtime) / 86400), "mtime": st.st_mtime})
         seen = set()
         uniq = []
         for p in pending:
@@ -322,17 +270,21 @@ class CloudArchive(_PluginBase):
                 continue
             seen.add(k)
             uniq.append(p)
-
         self._pending_files = sorted(uniq, key=lambda x: x["mtime"])
+        valid_paths = {x["path"] for x in self._pending_files}
+        self._selected_paths = [p for p in self._selected_paths if p in valid_paths]
         self._last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.save_data("pending_files", self._pending_files)
         self.save_data("last_scan_time", self._last_scan_time)
 
-        logger.info(f"[CloudArchive] 扫描完成: {len(self._pending_files)} 个")
-
-    def _do_transfer(self):
+    def _do_transfer(self, selected_only: bool = True):
         if not self._pending_files:
             return
+        if selected_only:
+            selected_set = set(self._selected_paths or [])
+            candidates = [x for x in self._pending_files if x.get("path") in selected_set]
+        else:
+            candidates = list(self._pending_files)
 
         target_root = Path(self._target_path)
         target_root.mkdir(parents=True, exist_ok=True)
@@ -340,32 +292,35 @@ class CloudArchive(_PluginBase):
         success = failed = skipped = 0
         details = []
 
-        for item in list(self._pending_files):
+        for item in list(candidates):
             src = Path(item["path"])
+            if not src.exists():
+                skipped += 1
+                details.append(f"⏭️ 不存在: {item['name']}")
+                if item in self._pending_files:
+                    self._pending_files.remove(item)
+                continue
             dst = target_root / item["name"]
-
             if dst.exists() and dst.stat().st_size == item["size_bytes"]:
                 skipped += 1
                 details.append(f"⏭️ 已存在: {item['name']}")
-                self._pending_files.remove(item)
+                if item in self._pending_files:
+                    self._pending_files.remove(item)
                 continue
-
             try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
-
                 if not dst.exists() or dst.stat().st_size != item["size_bytes"]:
                     raise RuntimeError("目标校验失败")
-
                 if self._delete_local:
                     self._cleanup_hardlinks(item["name"], keep_path=str(dst))
-
                 if self._delete_qb:
                     self._remove_qb_torrent(item)
-
                 success += 1
                 details.append(f"✅ {item['name']}")
-                self._pending_files.remove(item)
+                if item in self._pending_files:
+                    self._pending_files.remove(item)
+                if item.get("path") in self._selected_paths:
+                    self._selected_paths.remove(item.get("path"))
             except Exception as e:
                 failed += 1
                 details.append(f"❌ {item['name']}: {e}")
@@ -382,10 +337,7 @@ class CloudArchive(_PluginBase):
         self.save_data("last_transfer_result", self._last_transfer_result)
 
         if self._notify:
-            self._send_notification(
-                "📦 夸克归档完成",
-                f"成功: {success}\n失败: {failed}\n跳过: {skipped}\n\n" + "\n".join(details[-8:]),
-            )
+            self._send_notification("📦 夸克归档完成", f"成功: {success}\n失败: {failed}\n跳过: {skipped}")
 
     def _cleanup_hardlinks(self, filename: str, keep_path: str = ""):
         for root_raw in self._split_lines(self._hardlink_paths):
@@ -410,11 +362,9 @@ class CloudArchive(_PluginBase):
             svc = next((s for s in services if s.get("default")), services[0])
             if "qb" not in str(svc.get("type", "")).lower():
                 return
-
             downloader = helper.get_service(name=svc.get("name", ""))
             if not downloader or not downloader.instance:
                 return
-
             stem = Path(item["name"]).stem
             for t in downloader.instance.get_torrents() or []:
                 tname = str(t.get("name", ""))
@@ -422,7 +372,6 @@ class CloudArchive(_PluginBase):
                     thash = t.get("hash")
                     if thash:
                         downloader.instance.delete_torrents(delete_file=False, ids=[thash])
-                        logger.info(f"[CloudArchive] 已删QB记录: {tname}")
                         return
         except Exception as e:
             logger.warning(f"[CloudArchive] 删除QB记录失败: {e}")
