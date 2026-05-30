@@ -16,10 +16,13 @@ from app.schemas import NotificationType
 
 
 class CloudArchive(_PluginBase):
+    VIDEO_EXTENSIONS = {
+        ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".iso", ".mpg", ".mpeg", ".webm"
+    }
     plugin_name = "夸克网盘归档"
     plugin_desc = "旧文件转移到夸克挂载目录，支持先扫描再勾选归档。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.2"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -192,8 +195,8 @@ class CloudArchive(_PluginBase):
 
         if not self._enabled and not self._onlyonce and not self._run_selected_once:
             return
-        if not self._target_path or not self._scan_paths:
-            logger.warning("[CloudArchive] 未配置扫描目录或归档目录")
+        if not self._target_path or not self._hardlink_paths:
+            logger.warning("[CloudArchive] 未配置硬链接目录或归档目录")
             return
 
         self._scheduler = BackgroundScheduler(timezone=settings.TZ)
@@ -223,11 +226,18 @@ class CloudArchive(_PluginBase):
     def _split_lines(self, raw: str) -> List[str]:
         return [x.strip() for x in raw.replace(",", "\n").split("\n") if x.strip()]
 
+    def _is_video_file(self, fp: Path) -> bool:
+        return fp.suffix.lower() in self.VIDEO_EXTENSIONS
+
     def _do_scan_only(self):
         self._do_scan()
         if self._notify:
             total_mb = sum(x.get("size_mb", 0) for x in self._pending_files)
-            self._send_notification("📦 扫描完成", f"候选文件: {len(self._pending_files)} 个，约 {total_mb:.0f}MB。请在插件配置里勾选后执行。")
+            total_gb = total_mb / 1024
+            self._send_notification(
+                "📦 扫描完成",
+                f"候选文件: {len(self._pending_files)} 个，约 {total_mb:.0f}MB（约 {total_gb:.2f}GB）。请在插件配置里勾选后执行。",
+            )
 
     def _run_selected_now(self):
         self._do_scan()
@@ -237,45 +247,59 @@ class CloudArchive(_PluginBase):
         self._do_scan()
         if self._confirm_mode:
             if self._notify and self._pending_files:
-                self._send_notification("📦 发现可归档文件", f"共 {len(self._pending_files)} 个。手动确认模式已开启。")
+                total_mb = sum(x.get("size_mb", 0) for x in self._pending_files)
+                total_gb = total_mb / 1024
+                self._send_notification(
+                    "📦 发现可归档文件",
+                    f"共 {len(self._pending_files)} 个，约 {total_mb:.0f}MB（约 {total_gb:.2f}GB）。手动确认模式已开启。",
+                )
             return
         self._do_transfer(selected_only=self._selected_mode)
 
     def _do_scan(self):
-        scan_dirs = self._split_lines(self._scan_paths)
-        cutoff = time.time() - (self._days * 86400)
-        pending = []
-        for scan_dir in scan_dirs:
-            root = Path(scan_dir)
-            if not root.exists():
-                continue
-            for fp in root.rglob("*"):
-                if not fp.is_file():
+        # 按用户要求：扫描结果只来自硬链接目录
+        scan_dirs = self._split_lines(self._hardlink_paths)
+        def _do_scan(self):
+            # 仅扫描“硬链接目录”下的视频文件
+            scan_dirs = self._split_lines(self._hardlink_paths)
+            video_exts = {
+                ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"
+            }
+            cutoff = time.time() - (self._days * 86400)
+            pending = []
+            for scan_dir in scan_dirs:
+                root = Path(scan_dir)
+                if not root.exists():
                     continue
-                try:
-                    st = fp.stat()
-                except Exception:
+                for fp in root.rglob("*"):
+                    if not fp.is_file():
+                        continue
+                    if fp.suffix.lower() not in video_exts:
+                        continue
+                    try:
+                        st = fp.stat()
+                    except Exception:
+                        continue
+                    if st.st_mtime > cutoff:
+                        continue
+                    size_mb = st.st_size / (1024 * 1024)
+                    if self._size_threshold_mb > 0 and size_mb < self._size_threshold_mb:
+                        continue
+                    pending.append({"name": fp.name, "path": str(fp), "size_bytes": st.st_size, "size_mb": round(size_mb, 2), "age_days": int((time.time() - st.st_mtime) / 86400), "mtime": st.st_mtime})
+            seen = set()
+            uniq = []
+            for p in pending:
+                k = (p["path"], p["size_bytes"])
+                if k in seen:
                     continue
-                if st.st_mtime > cutoff:
-                    continue
-                size_mb = st.st_size / (1024 * 1024)
-                if self._size_threshold_mb > 0 and size_mb < self._size_threshold_mb:
-                    continue
-                pending.append({"name": fp.name, "path": str(fp), "size_bytes": st.st_size, "size_mb": round(size_mb, 2), "age_days": int((time.time() - st.st_mtime) / 86400), "mtime": st.st_mtime})
-        seen = set()
-        uniq = []
-        for p in pending:
-            k = (p["path"], p["size_bytes"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(p)
-        self._pending_files = sorted(uniq, key=lambda x: x["mtime"])
-        valid_paths = {x["path"] for x in self._pending_files}
-        self._selected_paths = [p for p in self._selected_paths if p in valid_paths]
-        self._last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.save_data("pending_files", self._pending_files)
-        self.save_data("last_scan_time", self._last_scan_time)
+                seen.add(k)
+                uniq.append(p)
+            self._pending_files = sorted(uniq, key=lambda x: x["mtime"])
+            valid_paths = {x["path"] for x in self._pending_files}
+            self._selected_paths = [p for p in self._selected_paths if p in valid_paths]
+            self._last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.save_data("pending_files", self._pending_files)
+            self.save_data("last_scan_time", self._last_scan_time)
 
     def _do_transfer(self, selected_only: bool = True):
         if not self._pending_files:
