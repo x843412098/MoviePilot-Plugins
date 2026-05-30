@@ -19,7 +19,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "网盘归档"
     plugin_desc = "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "2.1.0"
+    plugin_version = "2.1.1"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -379,18 +379,26 @@ class CloudArchive(_PluginBase):
         if not selected_only:
             return rows
 
+        def _norm_group(g: str) -> str:
+            g = (g or "").strip()
+            if g.startswith("movie/"):
+                return "电影/" + g.split("/", 1)[1]
+            if g.startswith("tv/"):
+                return "电视剧/" + g.split("/", 1)[1]
+            return g
+
         smp = set(self._selected_movie_paths or [])
         stp = set(self._selected_tv_paths or [])
-        smg = set(self._selected_movie_groups or []) if self._series_group_mode else set()
-        stg = set(self._selected_tv_groups or []) if self._series_group_mode else set()
+        smg = set(_norm_group(x) for x in (self._selected_movie_groups or [])) if self._series_group_mode else set()
+        stg = set(_norm_group(x) for x in (self._selected_tv_groups or [])) if self._series_group_mode else set()
 
         picked = []
         for x in rows:
             if x["media_type"] == "movie":
-                if x["path"] in smp or x["group"] in smg:
+                if x["path"] in smp or _norm_group(x["group"]) in smg:
                     picked.append(x)
             else:
-                if x["path"] in stp or x["group"] in stg:
+                if x["path"] in stp or _norm_group(x["group"]) in stg:
                     picked.append(x)
         return picked
 
