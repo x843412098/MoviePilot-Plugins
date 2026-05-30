@@ -20,7 +20,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "网盘归档"
     plugin_desc = "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "2.1.2"
+    plugin_version = "2.1.3"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -430,6 +430,22 @@ class CloudArchive(_PluginBase):
             cur = cur.parent
 
     def _move_with_retry(self, src: Path, dst: Path, size_bytes: int, retries: int = 3):
+        # 先做可读/可写探测，提升报错可读性
+        try:
+            with open(src, 'rb') as f:
+                _ = f.read(4096)
+        except Exception as e:
+            raise RuntimeError(f"源文件读取失败: {src} ({e})")
+
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            probe = dst.parent / '.cloudarchive_probe.tmp'
+            with open(probe, 'w', encoding='utf-8') as f:
+                f.write('ok')
+            probe.unlink(missing_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"目标目录写入失败: {dst.parent} ({e})")
+
         last_err = None
         for i in range(retries):
             try:
