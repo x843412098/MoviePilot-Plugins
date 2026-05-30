@@ -1,7 +1,7 @@
 {
   "CloudArchive": {
     "name": "夸克网盘归档",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "定期将超过指定天数的下载文件移动到夸克网盘，清理本地文件和QB种子记录。",
     "author": "Hermes Agent",
     "level": 2,
