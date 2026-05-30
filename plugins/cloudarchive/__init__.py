@@ -19,7 +19,7 @@ class CloudArchive(_PluginBase):
     plugin_name = "网盘归档"
     plugin_desc = "按电影/电视剧分开配置，扫描硬链接视频并归档到网盘目录。"
     plugin_icon = "cloud_archive.png"
-    plugin_version = "2.0.1"
+    plugin_version = "2.1.0"
     plugin_author = "Hermes Agent"
     author_url = "https://github.com/x843412098/MoviePilot-Plugins"
     plugin_config_prefix = "cloudarchive_"
@@ -70,6 +70,8 @@ class CloudArchive(_PluginBase):
 
     _last_scan_time: Optional[str] = None
     _last_transfer_result: Optional[Dict[str, Any]] = None
+    _archive_logs: List[Dict[str, Any]] = []
+    _clear_logs_once = False
 
     VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"}
 
@@ -83,13 +85,13 @@ class CloudArchive(_PluginBase):
         kw = (keyword or "").strip().lower()
         if kw:
             live_rows = [x for x in live_rows if kw in str(x.get("group", "")).lower() or kw in str(x.get("name", "")).lower()]
-        return [{"title": f"{x.get('name','')} | {x.get('age_days', 0)}天 | {x.get('size_mb',0)}MB", "value": x.get("path", "")} for x in live_rows[:800]]
+        return [{"title": f"{x.get('group','')} / {x.get('name','')} | {x.get('size_mb',0):.2f}MB / {x.get('size_mb',0)/1024:.2f}GB | {x.get('age_days', 0)}天", "value": x.get("path", "")} for x in live_rows[:800]]
 
     def _to_group_items(self, rows: List[Dict[str, Any]], keyword: str) -> List[Dict[str, str]]:
         kw = (keyword or "").strip().lower()
         if kw:
             rows = [g for g in rows if kw in str(g.get("group", "")).lower()]
-        return [{"title": f"{g['group']} | {g['count']}个视频 | {g['size_mb']:.0f}MB", "value": g["group"]} for g in rows[:800]]
+        return [{"title": f"{g['group']} | {g['count']}个视频 | {g['size_mb']:.0f}MB / {g['size_mb']/1024:.2f}GB", "value": g["group"]} for g in rows[:800]]
 
     def _prune_missing_candidates(self):
         self._pending_movie_files = [x for x in (self._pending_movie_files or []) if x.get("path") and Path(x.get("path")).exists()]
@@ -139,6 +141,7 @@ class CloudArchive(_PluginBase):
                 {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "risk_control_enabled", "label": "启用风控限流"}}]},
                 {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VTextField", "props": {"model": "max_items_per_run", "label": "单次最多处理", "type": "number"}}]},
                 {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VTextField", "props": {"model": "item_interval_sec", "label": "每项间隔秒", "type": "number"}}]},
+                {"component": "VCol", "props": {"cols": 12, "md": 3}, "content": [{"component": "VSwitch", "props": {"model": "clear_logs_once", "label": "清空归档日志(一次)"}}]},
             ]},
 
             {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "电影候选"}},
@@ -170,6 +173,7 @@ class CloudArchive(_PluginBase):
             "delete_local": True, "delete_qb": True,
             "selected_mode": True, "series_group_mode": True, "run_selected_once": False,
             "risk_control_enabled": True, "max_items_per_run": 1, "item_interval_sec": 2,
+            "clear_logs_once": False,
             "movie_keyword": "", "tv_keyword": "",
             "selected_movie_paths": [], "selected_tv_paths": [],
             "selected_movie_groups": [], "selected_tv_groups": [],
@@ -180,12 +184,21 @@ class CloudArchive(_PluginBase):
         tv_mb = sum(x.get("size_mb", 0) for x in self._pending_tv_files)
         total_mb = movie_mb + tv_mb
         last = self._last_transfer_result or {}
-        return [{"component": "VCard", "props": {"title": "网盘归档 v2.0.1"}, "content": [{"component": "VCardText", "props": {"text":
-            f"电影候选: {len(self._pending_movie_files)} 个（{movie_mb:.0f}MB）\n"
-            f"电视剧候选: {len(self._pending_tv_files)} 个（{tv_mb:.0f}MB）\n"
+        logs = self._archive_logs or []
+        latest_logs = logs[-5:]
+        lines = []
+        for r in reversed(latest_logs):
+            lines.append(f"[{r.get('time')}] 成功{r.get('success',0)} 失败{r.get('failed',0)} 跳过{r.get('skipped',0)}")
+            for d in (r.get('details') or [])[-3:]:
+                lines.append(f"  - {d}")
+        detail_text = "\n".join(lines) if lines else "暂无归档日志"
+        return [{"component": "VCard", "props": {"title": "网盘归档 v2.1.0"}, "content": [{"component": "VCardText", "props": {"text":
+            f"电影候选: {len(self._pending_movie_files)} 个（{movie_mb:.0f}MB / {movie_mb/1024:.2f}GB）\n"
+            f"电视剧候选: {len(self._pending_tv_files)} 个（{tv_mb:.0f}MB / {tv_mb/1024:.2f}GB）\n"
             f"总计: {total_mb:.0f}MB / {total_mb/1024:.2f}GB\n"
             f"上次扫描: {self._last_scan_time or '从未'}\n"
-            f"上次结果: 成功{last.get('success',0)} 失败{last.get('failed',0)} 跳过{last.get('skipped',0)}"
+            f"上次结果: 成功{last.get('success',0)} 失败{last.get('failed',0)} 跳过{last.get('skipped',0)}\n"
+            f"最近归档日志:\n{detail_text}"
         }}]}]
 
     def get_state(self) -> bool:
@@ -216,6 +229,7 @@ class CloudArchive(_PluginBase):
         self._max_items_per_run = max(1, int(config.get("max_items_per_run", 1) or 1))
         self._item_interval_sec = max(0, int(config.get("item_interval_sec", 2) or 0))
         self._run_selected_once = config.get("run_selected_once", False)
+        self._clear_logs_once = config.get("clear_logs_once", False)
 
         self._movie_keyword = str(config.get("movie_keyword", "") or "").strip()
         self._tv_keyword = str(config.get("tv_keyword", "") or "").strip()
@@ -231,6 +245,13 @@ class CloudArchive(_PluginBase):
         self._pending_tv_groups = self.get_data("pending_tv_groups") or []
         self._last_scan_time = self.get_data("last_scan_time")
         self._last_transfer_result = self.get_data("last_transfer_result")
+        self._archive_logs = self.get_data("archive_logs") or []
+
+        if self._clear_logs_once:
+            self._archive_logs = []
+            self.save_data("archive_logs", self._archive_logs)
+            config["clear_logs_once"] = False
+            self.update_config(config=config)
 
         self.stop_service()
         if not self._enabled and not self._onlyonce and not self._run_selected_once:
@@ -255,8 +276,12 @@ class CloudArchive(_PluginBase):
         if self._scheduler.get_jobs():
             self._scheduler.start()
 
-    def _scan_one_category(self, media_type: str, hard_root_raw: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        root = Path(hard_root_raw) if hard_root_raw else None
+    def _scan_one_category(self, media_type: str, hard_root_raw: str, src_root_raw: str, cn_label: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        # 优先硬链接目录；若未配置或不存在则回退源目录
+        hard_root = Path(hard_root_raw) if hard_root_raw else None
+        src_root = Path(src_root_raw) if src_root_raw else None
+        root = hard_root if hard_root and hard_root.exists() else src_root
+        scan_kind = "hardlink" if root and hard_root and root == hard_root else "source"
         if not root or not root.exists():
             return [], []
 
@@ -279,7 +304,7 @@ class CloudArchive(_PluginBase):
 
             rel = fp.relative_to(root)
             group_part = rel.parts[0] if len(rel.parts) > 1 else fp.name
-            group = f"{media_type}/{group_part}"
+            group = f"{cn_label}/{group_part}"
             pending.append({
                 "media_type": media_type,
                 "name": fp.name,
@@ -288,7 +313,10 @@ class CloudArchive(_PluginBase):
                 "size_mb": round(size_mb, 2),
                 "age_days": int((time.time() - st.st_mtime) / 86400),
                 "mtime": st.st_mtime,
-                "hard_root": str(root),
+                "hard_root": str(hard_root) if hard_root else "",
+                "source_root": str(src_root) if src_root else "",
+                "scan_root": str(root),
+                "scan_kind": scan_kind,
                 "group": group,
                 "rel_path": str(rel),
             })
@@ -304,8 +332,8 @@ class CloudArchive(_PluginBase):
         return pending, sorted(groups.values(), key=lambda x: x["group"])
 
     def _do_scan(self):
-        self._pending_movie_files, self._pending_movie_groups = self._scan_one_category("movie", self._movie_hardlink)
-        self._pending_tv_files, self._pending_tv_groups = self._scan_one_category("tv", self._tv_hardlink)
+        self._pending_movie_files, self._pending_movie_groups = self._scan_one_category("movie", self._movie_hardlink, self._movie_source, "电影")
+        self._pending_tv_files, self._pending_tv_groups = self._scan_one_category("tv", self._tv_hardlink, self._tv_source, "电视剧")
 
         valid_movie_paths = {x["path"] for x in self._pending_movie_files}
         valid_tv_paths = {x["path"] for x in self._pending_tv_files}
@@ -366,7 +394,7 @@ class CloudArchive(_PluginBase):
                     picked.append(x)
         return picked
 
-    def _roots_for_item(self, item: Dict[str, Any]) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
+    def _roots_for_item(self, item: Dict[str, Any]) -> Tuple[Optional[Path], Optional[Path], Optional[Path], Optional[Path]]:
         mt = item.get("media_type")
         if mt == "movie":
             hard = Path(self._movie_hardlink) if self._movie_hardlink else None
@@ -376,7 +404,8 @@ class CloudArchive(_PluginBase):
             hard = Path(self._tv_hardlink) if self._tv_hardlink else None
             src = Path(self._tv_source) if self._tv_source else None
             dst = Path(self._tv_target) if self._tv_target else None
-        return hard, src, dst
+        scan_root = Path(item.get("scan_root")) if item.get("scan_root") else (hard if hard and hard.exists() else src)
+        return hard, src, dst, scan_root
 
     def _cleanup_empty_parents(self, start: Path, stop_root: Optional[Path]):
         if not stop_root:
@@ -399,17 +428,21 @@ class CloudArchive(_PluginBase):
             return
 
         success = failed = skipped = 0
+        details = []
 
         for idx, item in enumerate(candidates, start=1):
             src = Path(item["path"])
-            hard_root, source_root, target_root = self._roots_for_item(item)
+            hard_root, source_root, target_root, scan_root = self._roots_for_item(item)
 
             if not src.exists():
                 skipped += 1
+                details.append(f"⏭️ {item.get('name')} | 文件已不存在")
                 continue
             if not target_root:
                 failed += 1
-                logger.error(f"[CloudArchive] 未配置目标目录: {item}")
+                msg = "未配置目标目录"
+                details.append(f"❌ {item.get('name')} | {msg}")
+                logger.error(f"[CloudArchive] {msg}: {item}")
                 continue
 
             rel = Path(item.get("rel_path", src.name))
@@ -421,21 +454,32 @@ class CloudArchive(_PluginBase):
                 if not dst.exists() or dst.stat().st_size != item["size_bytes"]:
                     raise RuntimeError("目标校验失败")
 
+                # 删除另一侧对应文件：无论扫描来源是硬链接还是源目录，都尽量清理两侧
                 if self._delete_local:
+                    if hard_root:
+                        hard_file = hard_root / rel
+                        if hard_file.exists() and hard_file.is_file():
+                            hard_file.unlink(missing_ok=True)
+                            self._cleanup_empty_parents(hard_file.parent, hard_root)
                     if source_root:
                         source_file = source_root / rel
                         if source_file.exists() and source_file.is_file():
                             source_file.unlink(missing_ok=True)
                             self._cleanup_empty_parents(source_file.parent, source_root)
-                    if hard_root:
-                        self._cleanup_empty_parents(src.parent, hard_root)
+                    # 扫描根也做一遍兜底清理
+                    if scan_root:
+                        self._cleanup_empty_parents(src.parent, scan_root)
 
                 if self._delete_qb:
                     self._remove_qb_torrent(item)
 
                 success += 1
+                details.append(
+                    f"✅ {item.get('group','')} / {item.get('name')} | {item.get('size_mb',0):.2f}MB/{item.get('size_mb',0)/1024:.2f}GB | {src} -> {dst}"
+                )
             except Exception as e:
                 failed += 1
+                details.append(f"❌ {item.get('group','')} / {item.get('name')} | 错误: {e}")
                 logger.error(f"[CloudArchive] 归档失败 {src}: {e}")
 
             if self._risk_control_enabled and self._item_interval_sec > 0 and idx < len(candidates):
@@ -446,13 +490,28 @@ class CloudArchive(_PluginBase):
             "failed": failed,
             "skipped": skipped,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "detail": "\n".join(details[-30:]),
         }
+
+        # 归档日志沉淀（设置页可看/可清）
+        self._archive_logs = (self._archive_logs or []) + [{
+            "time": self._last_transfer_result["time"],
+            "success": success,
+            "failed": failed,
+            "skipped": skipped,
+            "details": details[-100:],
+        }]
+        self._archive_logs = self._archive_logs[-200:]
 
         self._do_scan()  # 刷新列表
         self.save_data("last_transfer_result", self._last_transfer_result)
+        self.save_data("archive_logs", self._archive_logs)
 
         if self._notify:
-            self._send_notification("📦 网盘归档完成", f"成功: {success}\n失败: {failed}\n跳过: {skipped}")
+            self._send_notification(
+                "📦 网盘归档完成",
+                f"成功: {success} 失败: {failed} 跳过: {skipped}\n" + "\n".join(details[-10:])
+            )
 
     def _remove_qb_torrent(self, item: Dict[str, Any]):
         try:
