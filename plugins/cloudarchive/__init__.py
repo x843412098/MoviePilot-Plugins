@@ -257,49 +257,48 @@ class CloudArchive(_PluginBase):
         self._do_transfer(selected_only=self._selected_mode)
 
     def _do_scan(self):
-        # 按用户要求：扫描结果只来自硬链接目录
+        # 仅扫描“硬链接目录”下的视频文件
         scan_dirs = self._split_lines(self._hardlink_paths)
-        def _do_scan(self):
-            # 仅扫描“硬链接目录”下的视频文件
-            scan_dirs = self._split_lines(self._hardlink_paths)
-            video_exts = {
-                ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"
-            }
-            cutoff = time.time() - (self._days * 86400)
-            pending = []
-            for scan_dir in scan_dirs:
-                root = Path(scan_dir)
-                if not root.exists():
+        video_exts = {
+            ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"
+        }
+        cutoff = time.time() - (self._days * 86400)
+        pending = []
+        for scan_dir in scan_dirs:
+            root = Path(scan_dir)
+            if not root.exists():
+                continue
+            for fp in root.rglob("*"):
+                if not fp.is_file():
                     continue
-                for fp in root.rglob("*"):
-                    if not fp.is_file():
-                        continue
-                    if fp.suffix.lower() not in video_exts:
-                        continue
-                    try:
-                        st = fp.stat()
-                    except Exception:
-                        continue
-                    if st.st_mtime > cutoff:
-                        continue
-                    size_mb = st.st_size / (1024 * 1024)
-                    if self._size_threshold_mb > 0 and size_mb < self._size_threshold_mb:
-                        continue
-                    pending.append({"name": fp.name, "path": str(fp), "size_bytes": st.st_size, "size_mb": round(size_mb, 2), "age_days": int((time.time() - st.st_mtime) / 86400), "mtime": st.st_mtime})
-            seen = set()
-            uniq = []
-            for p in pending:
-                k = (p["path"], p["size_bytes"])
-                if k in seen:
+                if fp.suffix.lower() not in video_exts:
                     continue
-                seen.add(k)
-                uniq.append(p)
-            self._pending_files = sorted(uniq, key=lambda x: x["mtime"])
-            valid_paths = {x["path"] for x in self._pending_files}
-            self._selected_paths = [p for p in self._selected_paths if p in valid_paths]
-            self._last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.save_data("pending_files", self._pending_files)
-            self.save_data("last_scan_time", self._last_scan_time)
+                try:
+                    st = fp.stat()
+                except Exception:
+                    continue
+                if st.st_mtime > cutoff:
+                    continue
+                size_mb = st.st_size / (1024 * 1024)
+                if self._size_threshold_mb > 0 and size_mb < self._size_threshold_mb:
+                    continue
+                pending.append({"name": fp.name, "path": str(fp), "size_bytes": st.st_size, "size_mb": round(size_mb, 2), "age_days": int((time.time() - st.st_mtime) / 86400), "mtime": st.st_mtime})
+
+        seen = set()
+        uniq = []
+        for p in pending:
+            k = (p["path"], p["size_bytes"])
+            if k in seen:
+                continue
+            seen.add(k)
+            uniq.append(p)
+
+        self._pending_files = sorted(uniq, key=lambda x: x["mtime"])
+        valid_paths = {x["path"] for x in self._pending_files}
+        self._selected_paths = [p for p in self._selected_paths if p in valid_paths]
+        self._last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.save_data("pending_files", self._pending_files)
+        self.save_data("last_scan_time", self._last_scan_time)
 
     def _do_transfer(self, selected_only: bool = True):
         if not self._pending_files:
